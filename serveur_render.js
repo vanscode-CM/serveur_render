@@ -36,7 +36,7 @@ let clientsActifs = new Map(); // Utilisation d'une Map pour de meilleures perfo
 // Nettoyage des clients inactifs
 const nettoyerClientsInactifs = () => {
     const maintenant = Date.now();
-    const delaiInactivite = 10000; // 10 secondes
+    const delaiInactivite = 120000; // 10 secondes
     
     for (const [telephone, derniereActivite] of clientsActifs.entries()) {
         if (maintenant - derniereActivite > delaiInactivite) {
@@ -166,4 +166,5 @@ app.listen(PORT, () => {
 process.on('SIGTERM', () => {
     console.log('🛑 Arrêt du serveur...');
     process.exit(0);
+
 });
