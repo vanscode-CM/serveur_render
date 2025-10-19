@@ -1,28 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 
-
-
-const https = require('https');
-
-https.get('https://api.ipify.org', (resp) => {
-    let data = '';
-
-    // Un morceau de la réponse a été reçu.
-    resp.on('data', (chunk) => {
-        data += chunk;
-    });
-
-    // La réponse complète a été reçue. Affiche le résultat.
-    resp.on('end', () => {
-        console.log(`Mon adresse IP publique est : ${data}`);
-    });
-
-}).on("error", (err) => {
-    console.log("Erreur : " + err.message);
-});
-
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -30,141 +8,86 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Stockage des clients actifs
-let clientsActifs = new Map(); // Utilisation d'une Map pour de meilleures performances
+// Configuration
+const DELAI_INACTIVITE = 120000; // 2 minutes
 
-// Nettoyage des clients inactifs
-const nettoyerClientsInactifs = () => {
-    const maintenant = Date.now();
-    const delaiInactivite = 120000; // 10 secondes
-    
-    for (const [telephone, derniereActivite] of clientsActifs.entries()) {
-        if (maintenant - derniereActivite > delaiInactivite) {
-            clientsActifs.delete(telephone);
-            console.log(`Client ${telephone} retiré (inactif)`);
-        }
+// Stockage des clients avec gestion individuelle des timeouts
+const clientsActifs = new Map(); // { telephone: { timeoutId, lastActivity } }
+
+// Fonction pour planifier la suppression automatique d'un client
+function planifierSuppression(telephone) {
+    // Annuler l'ancien timeout s'il existe
+    const clientExistant = clientsActifs.get(telephone);
+    if (clientExistant && clientExistant.timeoutId) {
+        clearTimeout(clientExistant.timeoutId);
     }
-};
 
-// Nettoyage toutes les 5 secondes
-setInterval(nettoyerClientsInactifs, 5000);
+    // Créer un nouveau timeout pour ce client
+    const timeoutId = setTimeout(() => {
+        clientsActifs.delete(telephone);
+        console.log(`🔴 Client ${telephone} retiré (inactif depuis 2 minutes)`);
+    }, DELAI_INACTIVITE);
 
-// Route pour recevoir les requêtes des clients
-app.post('/api/client-actif', (req, res) => {
+    return timeoutId;
+}
+
+// Route pour signaler la présence d'un client
+app.post('/api/signal-presence', (req, res) => {
     try {
         const { telephone } = req.body;
         
-        // Validation du numéro de téléphone
-        if (!telephone || typeof telephone !== 'string') {
-            return res.status(400).json({
-                success: false,
-                message: 'Numéro de téléphone requis'
+        if (!telephone) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Numéro de téléphone requis' 
             });
         }
-        
-        // Mettre à jour ou ajouter le client
-        clientsActifs.set(telephone, Date.now());
-        
-        console.log(`Client ${telephone} mis à jour`);
-        
-        // Retourner la liste des clients actifs
-        const listeClients = Array.from(clientsActifs.keys());
-        
+
+        const maintenant = Date.now();
+        const estNouveauClient = !clientsActifs.has(telephone);
+
+        // Mettre à jour ou créer le client avec son timeout
+        clientsActifs.set(telephone, {
+            lastActivity: maintenant,
+            timeoutId: planifierSuppression(telephone)
+        });
+
+        console.log(`✅ ${estNouveauClient ? 'Nouveau' : 'Client'} ${telephone} - Activité à ${new Date(maintenant).toLocaleTimeString()}`);
+
         res.json({
             success: true,
-            message: 'Statut mis à jour avec succès',
-            clientsActifs: listeClients,
-            timestamp: new Date().toISOString()
+            message: `Présence signalée avec succès`,
+            clientsActifs: Array.from(clientsActifs.keys()),
+            total: clientsActifs.size
         });
-        
+
     } catch (error) {
-        console.error('Erreur lors du traitement:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Erreur interne du serveur'
+        console.error('Erreur:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Erreur serveur' 
         });
     }
 });
 
-// Route pour récupérer la liste des clients actifs (GET)
+// Route pour voir les clients actifs
 app.get('/api/clients-actifs', (req, res) => {
-    try {
-        const listeClients = Array.from(clientsActifs.keys());
-        
-        res.json({
-            success: true,
-            clientsActifs: listeClients,
-            total: listeClients.length,
-            timestamp: new Date().toISOString()
-        });
-        
-    } catch (error) {
-        console.error('Erreur lors de la récupération:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Erreur interne du serveur'
-        });
-    }
-});
+    const clients = Array.from(clientsActifs.entries()).map(([tel, data]) => ({
+        telephone: tel,
+        dernierActivite: new Date(data.lastActivity).toISOString(),
+        inactifDepuis: Math.round((Date.now() - data.lastActivity) / 1000) + 's'
+    }));
 
-// Route pour supprimer manuellement un client
-app.delete('/api/client/:telephone', (req, res) => {
-    try {
-        const { telephone } = req.params;
-        
-        if (clientsActifs.has(telephone)) {
-            clientsActifs.delete(telephone);
-            res.json({
-                success: true,
-                message: `Client ${telephone} retiré avec succès`
-            });
-        } else {
-            res.status(404).json({
-                success: false,
-                message: 'Client non trouvé'
-            });
-        }
-        
-    } catch (error) {
-        console.error('Erreur lors de la suppression:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Erreur interne du serveur'
-        });
-    }
-});
-
-// Route de santé
-app.get('/health', (req, res) => {
     res.json({
-        status: 'OK',
-        timestamp: new Date().toISOString(),
-        clientsActifs: clientsActifs.size
-    });
-});
-
-// Route racine
-app.get('/', (req, res) => {
-    res.json({
-        message: 'Serveur clients actifs - Déployé sur Render',
-        endpoints: {
-            'POST /api/client-actif': 'Marquer un client comme actif',
-            'GET /api/clients-actifs': 'Obtenir la liste des clients actifs',
-            'DELETE /api/client/:telephone': 'Supprimer un client',
-            'GET /health': 'Statut du serveur'
-        }
+        success: true,
+        clientsActifs: clients,
+        total: clients.length,
+        delaiInactivite: '2 minutes'
     });
 });
 
 // Démarrer le serveur
 app.listen(PORT, () => {
-    console.log(`🚀 Serveur démarré sur le port ${PORT}`);
-    console.log(`📍 Environnement: ${process.env.NODE_ENV || 'development'}`);
-});
-
-// Gestion propre de l'arrêt
-process.on('SIGTERM', () => {
-    console.log('🛑 Arrêt du serveur...');
-    process.exit(0);
-
+    console.log(`🚀 Serveur de présence démarré sur le port ${PORT}`);
+    console.log(`⏱️  Délai d'inactivité: ${DELAI_INACTIVITE/1000} secondes`);
 });
